@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SyncForge - Acesso Restrito</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = { darkMode: 'class' }
+      if (
+        localStorage.getItem('theme') === 'dark' ||
+        (!('theme' in localStorage) &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ) {
+        document.documentElement.classList.add('dark')
+      } else {
+        document.documentElement.classList.remove('dark')
+      }
+    </script>
+  </head>
+  <body
+    class="bg-gray-100 dark:bg-gray-900 font-sans h-screen flex items-center justify-center transition-colors duration-300"
+  >
+    <div
+      class="bg-white dark:bg-gray-800 p-10 rounded-xl shadow-2xl w-full max-w-md border-t-8 border-blue-600 dark:border-blue-500 transition-colors duration-300"
+    >
+      <div class="text-center mb-8">
+        <h1
+          class="text-3xl font-bold text-gray-800 dark:text-white flex items-center justify-center gap-2"
+        >
+          SyncForge <span class="text-2xl">🔐</span>
+        </h1>
+        <p class="text-gray-500 dark:text-gray-400 mt-2 text-sm">
+          Acesso restrito à administração
+        </p>
+      </div>
+
+      {% if erro %}
+      <div
+        class="bg-red-50 dark:bg-red-900/30 border-l-4 border-red-500 text-red-700 dark:text-red-400 p-4 mb-6 rounded text-sm font-semibold"
+      >
+        ⚠️ {{ erro }}
+      </div>
+      {% endif %}
+
+      <form action="/login" method="post" class="space-y-6">
+        <div>
+          <label
+            class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"
+            >Usuário Administrador</label
+          >
+          <input
+            type="text"
+            name="username"
+            required
+            autocomplete="off"
+            class="w-full px-4 py-3 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-gray-400 dark:placeholder-gray-500"
+          />
+        </div>
+        <div>
+          <label
+            class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"
+            >Senha de Acesso</label
+          >
+          <input
+            type="password"
+            name="password"
+            required
+            class="w-full px-4 py-3 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all placeholder-gray-400 dark:placeholder-gray-500"
+          />
+        </div>
+        <button
+          type="submit"
+          class="w-full bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white font-bold py-3 rounded-lg shadow-lg transform active:scale-95 transition-all text-lg"
+        >
+          Entrar no Painel
+        </button>
+      </form>
+    </div>
+  </body>
+</html>
