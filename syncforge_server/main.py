@@ -8,6 +8,9 @@ import asyncio
 import time
 import math
 import platform
+import json
+import csv
+import io
 from datetime import datetime
 from typing import Optional, List
 from fastapi import FastAPI, Request, Form, Cookie, Body, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Header
@@ -39,6 +42,14 @@ if not os.path.exists(STORAGE_DIR):
 # ==========================================
 # FUNÇÕES AUXILIARES
 # ==========================================
+def register_sync_log(user_id, username, folder_name, file_name, action):
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO sync_logs (user_id, username, folder_name, file_name, action) VALUES (?, ?, ?, ?, ?)",
+        (user_id, username, folder_name, file_name, action)
+    )
+    conn.commit()
+    conn.close()
 # Função auxiliar para deixar o tamanho do arquivo legível
 def format_size(size_bytes):
     if size_bytes == 0: return "0B"
@@ -99,45 +110,48 @@ def startup_event():
 # MOTOR DE COMUNICAÇÃO (WEBSOCKET)
 # ==========================================
 
+# No topo do main.py
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, list[WebSocket]] = {}
+        self.online_users = set() # 👈 Novo: Rastreia IDs de usuários online
 
-    async def connect(self, ws: WebSocket, folder_id: str):
-        await ws.accept()
+    async def connect(self, websocket: WebSocket, folder_id: str, user_id: str):
+        await websocket.accept()
         if folder_id not in self.active_connections:
             self.active_connections[folder_id] = []
-        self.active_connections[folder_id].append(ws)
+        self.active_connections[folder_id].append(websocket)
+        self.online_users.add(user_id) # 👈 Marca o usuário como online
 
-    def disconnect(self, ws: WebSocket, folder_id: str):
+    def disconnect(self, websocket: WebSocket, folder_id: str, user_id: str):
         if folder_id in self.active_connections:
-            self.active_connections[folder_id].remove(ws)
-
-    async def broadcast(self, message: str, folder_id: str):
-        if folder_id in self.active_connections:
-            for connection in self.active_connections[folder_id]:
-                try:
-                    await connection.send_text(message)
-                except: pass
+            self.active_connections[folder_id].remove(websocket)
+        # Se o usuário não tiver mais nenhuma pasta conectada, fica offline
+        self.online_users.discard(user_id)
 
 manager = ConnectionManager()
 
 class ServerFolderSyncHandler(FileSystemEventHandler):
-    def __init__(self, folder_id, loop, server_path):
+    def __init__(self, folder_id, user_id, username, folder_name, loop, server_path):
         self.folder_id = folder_id
+        self.user_id = user_id
+        self.username = username
+        self.folder_name = folder_name
         self.loop = loop
         self.server_path = os.path.abspath(server_path)
-        # 👈 ESSA LINHA ABAIXO É A QUE ESTAVA FALTANDO:
         self._pending_updates = {} 
 
     def _get_rel_path(self, src_path):
         return os.path.relpath(src_path, self.server_path).replace("\\", "/")
 
     def on_moved(self, event):
-        """Detecta renomeação e avisa o celular para apenas renomear o arquivo local."""
+        """Detecta renomeação e registra no log"""
         if event.is_directory: return
         old_rel = self._get_rel_path(event.src_path)
         new_rel = self._get_rel_path(event.dest_path)
+        
+        # 👈 REGISTRO DE LOG: RENAME
+        register_sync_log(self.user_id, self.username, self.folder_name, f"{old_rel} -> {new_rel}", "RENAME")
         
         print(f"🔄 Watchdog: Arquivo renomeado no PC: {old_rel} -> {new_rel}")
         asyncio.run_coroutine_threadsafe(
@@ -146,26 +160,44 @@ class ServerFolderSyncHandler(FileSystemEventHandler):
         )
 
     def on_deleted(self, event):
+        """Detecta exclusão e registra no log"""
         if event.is_directory: return
         rel_path = self._get_rel_path(event.src_path)
-        asyncio.run_coroutine_threadsafe(manager.broadcast(f"DELETE:{rel_path}", self.folder_id), self.loop)
+        
+        # 👈 REGISTRO DE LOG: DELETE
+        register_sync_log(self.user_id, self.username, self.folder_name, rel_path, "DELETE")
+        
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast(f"DELETE:{rel_path}", self.folder_id), 
+            self.loop
+        )
 
     def on_created(self, event):
+        """Detecta novo arquivo e inicia debounce para log e broadcast"""
         if not event.is_directory:
-            # Agora o loop.create_task não vai mais dar erro de atributo!
-            self.loop.create_task(self._debounce_broadcast(self._get_rel_path(event.src_path)))
+            rel_path = self._get_rel_path(event.src_path)
+            self.loop.create_task(self._debounce_broadcast(rel_path, "CREATE"))
 
     def on_modified(self, event):
+        """Detecta alteração e inicia debounce para log e broadcast"""
         if not event.is_directory:
-            self.loop.create_task(self._debounce_broadcast(self._get_rel_path(event.src_path)))
+            # Ignora o arquivo de controle interno
+            if ".syncforge_ledger" in event.src_path: return
+            
+            rel_path = self._get_rel_path(event.src_path)
+            self.loop.create_task(self._debounce_broadcast(rel_path, "UPDATE"))
 
-    async def _debounce_broadcast(self, rel_path):
-        # Aqui era onde o erro acontecia porque self._pending_updates não existia
+    async def _debounce_broadcast(self, rel_path, action_type):
+        """Aguardar o arquivo estabilizar antes de logar e enviar ao celular"""
         self._pending_updates[rel_path] = time.time()
         await asyncio.sleep(2) 
+        
+        # Só executa se não houveram novas mudanças nos últimos 2 segundos
         if time.time() - self._pending_updates.get(rel_path, 0) >= 2:
+            # 👈 REGISTRO DE LOG: CREATE ou UPDATE
+            register_sync_log(self.user_id, self.username, self.folder_name, rel_path, action_type)
+            
             await manager.broadcast(f"UPDATE:{rel_path}", self.folder_id)
-
 
 
 # ==========================================
@@ -333,17 +365,43 @@ async def download_file(folder_id: str, path: str):
 
 
 @app.post("/web/files/delete")
-async def delete_file(folder_id: str = Form(...), path: str = Form(...)):
+async def delete_file(
+    folder_id: str = Form(...), 
+    path: str = Form(...) # Mantemos 'path' para bater com seu HTML
+):
     conn = get_db_connection()
-    folder = conn.execute("SELECT server_path FROM folders WHERE id = ?", (folder_id,)).fetchone()
-    conn.close()
+    # 1. Buscamos os dados completos para o Log e para o Caminho
+    query = """
+        SELECT f.server_path, f.name as folder_name, u.id as user_id, u.username 
+        FROM folders f 
+        JOIN users u ON f.user_id = u.id 
+        WHERE f.id = ?
+    """
+    data = conn.execute(query, (folder_id,)).fetchone()
+
+    if not data:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Cofre não encontrado")
+
+    # 2. Montamos o caminho físico (path aqui é o nome do arquivo)
+    full_path = os.path.join(data['server_path'], path)
     
-    full_path = os.path.join(folder['server_path'], path)
     if os.path.exists(full_path):
         os.remove(full_path)
-        # Opcional: Atualizar o Ledger aqui ou deixar o Watchdog do servidor detectar
-        return RedirectResponse(url=f"/web/folders/{folder_id}/explorer", status_code=303)
-    raise HTTPException(status_code=404)
+        
+        # 3. REGISTRAMOS O LOG (Agora com os dados reais)
+        register_sync_log(
+            user_id=data['user_id'],
+            username=data['username'],
+            folder_name=data['folder_name'],
+            file_name=path, # O 'path' aqui é o nome do arquivo que foi deletado
+            action="DELETE (WEB)"
+        )
+        
+    conn.commit()
+    conn.close()
+    
+    return RedirectResponse(url=f"/web/folders/{folder_id}/explorer", status_code=303)
 
 
 @app.post("/web/folders/delete")
@@ -360,39 +418,62 @@ def web_delete_folder(folder_id: str = Form(...), syncforge_session: str = Cooki
 # ==========================================
 
 @app.post("/api/login")
-async def api_login(data: dict = Body(...)):
+async def api_login(request: Request, data: dict = Body(...)): # 👈 Adicionamos 'request' para pegar o IP
     email = data.get("email")
     password = data.get("password")
+    device_model = data.get("device_model", "Aparelho Desconhecido") # 👈 Captura o modelo enviado pelo Flutter
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 👈 Mudança: Agora selecionamos explicitamente o device_token
-    cursor.execute("SELECT id, email, password_hash, role, device_token FROM users WHERE email = ?", (email,))
+    # 1. Busca o usuário
+    cursor.execute("SELECT id, username, email, password_hash, role, device_token FROM users WHERE email = ?", (email,))
     user = cursor.fetchone()
-    conn.close()
     
     if user and bcrypt.checkpw(password.encode('utf-8'), user['password_hash'].encode('utf-8')):
-        # 👈 Mudança: Retornamos o dicionário com a chave que o seu UserModel.dart espera
+        user_id = user["id"]
+        client_ip = request.client.host # 👈 Pega o IP real de conexão (Arcoverde ou externa)
+
+        # 2. ⚡ O PULO DO GATO: Atualiza os dados de monitoramento automaticamente
+        cursor.execute("""
+            UPDATE users 
+            SET device_model = ?, last_ip = ?, last_seen = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        """, (device_model, client_ip, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # 3. Retorna exatamente o que seu UserModel.dart espera (sem quebrar o App)
         return {
             "status": "success", 
             "user": {
-                "id": user["id"], 
+                "id": user_id, 
+                "username": user["username"], # Adicionado para garantir
                 "email": user["email"], 
                 "role": user["role"],
-                "device_token": user["device_token"] # Se for None, o FastAPI envia como null
+                "device_token": user["device_token"],
+                "device_model": device_model # O App também recebe de volta o que enviou
             }
         }
+    
+    conn.close()
     raise HTTPException(status_code=401, detail="E-mail ou senha incorretos")
 
 # 👈 NOVA ROTA: Listagem de Usuários Web
 @app.get("/web/users")
-def painel_usuarios(request: Request, syncforge_session: str = Cookie(None)):
-    if not check_session(syncforge_session): return RedirectResponse(url="/login", status_code=303)
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT id, email, role, device_token FROM users")
-    usuarios = [dict(row) for row in cursor.fetchall()]
+async def list_users_page(request: Request):
+    conn = get_db_connection()
+    usuarios = conn.execute("SELECT * FROM users").fetchall()
     conn.close()
-    return templates.TemplateResponse(request=request, name="users.html", context={"usuarios": usuarios})
+    return templates.TemplateResponse(
+        request=request,
+        name="users.html",
+        context={
+            "usuarios": usuarios,
+            "online_users": manager.online_users # 👈 Passamos o set de usuários ativos
+        }
+    )
 
 @app.get("/logout")
 def logout():
@@ -618,6 +699,74 @@ async def get_file_text_content(folder_id: str, file_path: str):
     except Exception as e:
         print(f"❌ Erro ao ler texto: {e}")
         raise HTTPException(status_code=400, detail="O arquivo não é um texto válido")
+    
+@app.get("/web/logs")
+async def view_logs(
+    request: Request, 
+    user_id: str = None, 
+    start_date: str = None, 
+    end_date: str = None
+):
+    conn = get_db_connection()
+    query = "SELECT * FROM sync_logs WHERE 1=1"
+    params = []
+
+    if user_id:
+        query += " AND user_id = ?"
+        params.append(user_id)
+    if start_date:
+        query += " AND timestamp >= ?"
+        params.append(f"{start_date} 00:00:00")
+    if end_date:
+        query += " AND timestamp <= ?"
+        params.append(f"{end_date} 23:59:59")
+
+    query += " ORDER BY timestamp DESC LIMIT 500"
+    logs = conn.execute(query, params).fetchall()
+    usuarios = conn.execute("SELECT id, username FROM users").fetchall()
+    conn.close()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="logs.html",
+        context={"logs": logs, "usuarios": usuarios, "filters": {"user_id": user_id, "start": start_date, "end": end_date}}
+    )
+
+@app.get("/web/logs/export/{format}")
+async def export_logs(format: str):
+    conn = get_db_connection()
+    logs = conn.execute("SELECT * FROM sync_logs ORDER BY timestamp DESC").fetchall()
+    conn.close()
+
+    if format == "json":
+        data = [dict(log) for log in logs]
+        return StreamingResponse(
+            io.StringIO(json.dumps(data, indent=4)),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=syncforge_logs.json"}
+        )
+    
+    # Exportação CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "User ID", "User", "Vault", "File", "Action", "Timestamp"])
+    for log in logs:
+        writer.writerow([log['id'], log['user_id'], log['username'], log['folder_name'], log['file_name'], log['action'], log['timestamp']])
+    
+    output.seek(0)
+    return StreamingResponse(
+        io.StringIO(output.read()),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=syncforge_logs.csv"}
+    )
+
+@app.post("/web/logs/clear")
+async def clear_logs():
+    conn = get_db_connection()
+    conn.execute("DELETE FROM sync_logs")
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/web/logs", status_code=303)
 
 # ==========================================
 # 📡 WEBSOCKET
@@ -625,17 +774,64 @@ async def get_file_text_content(folder_id: str, file_path: str):
 
 @app.websocket("/api/ws/sync/{folder_id}")
 async def websocket_endpoint(websocket: WebSocket, folder_id: str):
-    await manager.connect(websocket, folder_id)
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT server_path FROM folders WHERE id = ?", (folder_id,))
-    folder = cursor.fetchone(); conn.close()
-    if folder:
-        path = os.path.abspath(folder['server_path'])
-        if os.path.exists(path) and folder_id not in active_observers:
-            handler = ServerFolderSyncHandler(folder_id, asyncio.get_running_loop(), path)
-            obs = Observer(); obs.schedule(handler, path, recursive=True); obs.start()
-            active_observers[folder_id] = obs
+    # 1. Busca os dados necessários para o Log e o Monitor
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Fazemos um JOIN para pegar o nome do usuário e da pasta de uma vez só
+    query = """
+        SELECT f.server_path, f.name as folder_name, u.id as user_id, u.username 
+        FROM folders f 
+        JOIN users u ON f.user_id = u.id 
+        WHERE f.id = ?
+    """
+    data = cursor.execute(query, (folder_id,)).fetchone()
+    
+    if not data:
+        conn.close()
+        await websocket.close(code=1008) # Pasta não encontrada
+        return
+
+    user_id = data['user_id']
+    username = data['username']
+    folder_name = data['folder_name']
+    server_path = os.path.abspath(data['server_path'])
+    client_ip = websocket.client.host
+
+    # 2. Atualiza o Live Status (IP e Visto por último)
+    cursor.execute(
+        "UPDATE users SET last_ip = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?",
+        (client_ip, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+    # 3. Registra a conexão no Manager (Marca como ONLINE)
+    await manager.connect(websocket, folder_id, user_id)
+
+    # 4. Inicia o Watchdog com os novos parâmetros para Log
+    if os.path.exists(server_path) and folder_id not in active_observers:
+        # Criamos o Handler passando tudo o que ele precisa para registrar os Logs
+        handler = ServerFolderSyncHandler(
+            folder_id=folder_id,
+            user_id=user_id,
+            username=username,
+            folder_name=folder_name,
+            loop=asyncio.get_running_loop(),
+            server_path=server_path
+        )
+        
+        obs = Observer()
+        obs.schedule(handler, server_path, recursive=True)
+        obs.start()
+        active_observers[folder_id] = obs
+        print(f"👀 Monitorando: {folder_name} para {username}")
+
     try:
-        while True: await websocket.receive_text()
+        # Mantém a conexão aberta aguardando mensagens (ou apenas o keep-alive)
+        while True:
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(websocket, folder_id)
+        # Remove do Manager e marca como OFFLINE
+        manager.disconnect(websocket, folder_id, user_id)
+        print(f"🔌 Desconectado: {username} ({folder_name})")

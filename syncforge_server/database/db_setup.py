@@ -31,7 +31,10 @@ def init_db():
             password_hash TEXT NOT NULL,
             email TEXT UNIQUE NOT NULL,
             role TEXT NOT NULL,
-            device_token TEXT
+            device_token TEXT,         
+            device_model TEXT,        
+            last_ip TEXT,              
+            last_seen DATETIME         
         )
     ''')
 
@@ -83,6 +86,18 @@ def init_db():
         uploaded_chunks INTEGER DEFAULT 0,
         status TEXT NOT NULL,
         FOREIGN KEY (file_id) REFERENCES files_metadata (id)
+    )
+    ''')
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS sync_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        folder_name TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        action TEXT NOT NULL, -- 'UPLOAD', 'DOWNLOAD', 'DELETE'
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id)
     )
     ''')
 
