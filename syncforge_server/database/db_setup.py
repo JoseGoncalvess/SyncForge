@@ -4,12 +4,11 @@ import os
 # O banco será criado na raiz do projeto
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "syncforge.db")
 
-# Sugestão: adicione em um lugar central de banco de dados
 def delete_folder_from_db(folder_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        # Remove arquivos primeiro por causa da Foreign Key
+        # Remove metadados primeiro por causa da Foreign Key
         cursor.execute("DELETE FROM files_metadata WHERE folder_id = ?", (folder_id,))
         cursor.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
         conn.commit()
@@ -24,7 +23,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # 1. Tabela de Usuários
+    # 1. Tabela de Usuários (Mantida exatamente como a sua)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -35,19 +34,20 @@ def init_db():
     )
     ''')
 
-    # 2. Tabela de Pastas (Folders)
+    # 2. Tabela de Pastas (Folders) - Adicionada apenas a coluna server_path
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS folders (
             id TEXT PRIMARY KEY,
-            user_id TEXT, -- Nova coluna de vínculo
+            user_id TEXT,
             name TEXT,
             sync_type TEXT,
+            server_path TEXT DEFAULT '/var/syncforge',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
     """)
 
-    # 3. Tabela de Metadados de Arquivos (A Árvore de Hashes)
+    # 3. Tabela de Metadados de Arquivos (Mantida exatamente como a sua)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS files_metadata (
         id TEXT PRIMARY KEY,
@@ -61,7 +61,7 @@ def init_db():
     )
     ''')
 
-    # 4. Tabela de Histórico (Versionamento)
+    # 4. Tabela de Histórico (Mantida exatamente como a sua)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS file_history (
         id TEXT PRIMARY KEY,
@@ -73,7 +73,7 @@ def init_db():
     )
     ''')
 
-    # 5. Tabela de Fila de Sincronização (Chunks)
+    # 5. Tabela de Fila de Sincronização (Mantida exatamente como a sua)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS sync_queue (
         id TEXT PRIMARY KEY,
@@ -87,7 +87,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print(f"Banco de dados SQLite inicializado com sucesso em: {DB_PATH}")
+    print(f"✅ Banco de dados SQLite inicializado com sucesso em: {DB_PATH}")
 
 if __name__ == "__main__":
     init_db()
