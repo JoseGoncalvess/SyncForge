@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Explorador - {{ folder['name'] }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      document.documentElement.classList.toggle(
+        'dark',
+        localStorage.getItem('theme') === 'dark'
+      )
+    </script>
+  </head>
+  <body
+    class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 p-6"
+  >
+    <div class="container mx-auto max-w-5xl">
+      <div class="flex justify-between items-center mb-6">
+        <div>
+          <a href="/" class="text-blue-500 hover:underline text-sm"
+            >← Voltar ao Dashboard</a
+          >
+          <h1 class="text-3xl font-bold mt-2">
+            Explorador: {{ folder['name'] }}
+          </h1>
+          <p class="text-xs text-gray-500 font-mono">
+            {{ folder['server_path'] }}
+          </p>
+        </div>
+      </div>
+
+      <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-lg overflow-hidden"
+      >
+        <table class="min-w-full">
+          <thead class="bg-gray-50 dark:bg-gray-700">
+            <tr>
+              <th
+                class="py-3 px-6 text-left text-xs font-bold uppercase tracking-wider"
+              >
+                Nome do Arquivo
+              </th>
+              <th
+                class="py-3 px-6 text-left text-xs font-bold uppercase tracking-wider"
+              >
+                Tamanho
+              </th>
+              <th
+                class="py-3 px-6 text-left text-xs font-bold uppercase tracking-wider"
+              >
+                Modificado
+              </th>
+              <th
+                class="py-3 px-6 text-center text-xs font-bold uppercase tracking-wider"
+              >
+                Ações
+              </th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+            {% for file in files %}
+            <tr
+              class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+            >
+              <td class="py-4 px-6 text-sm font-medium">{{ file.rel_path }}</td>
+              <td class="py-4 px-6 text-sm text-gray-500">{{ file.size }}</td>
+              <td class="py-4 px-6 text-sm text-gray-500">
+                {{ file.modified }}
+              </td>
+              <td class="py-4 px-6 flex justify-center gap-4">
+                <a
+                  href="/web/files/download?folder_id={{ folder['id'] }}&path={{ file.rel_path }}"
+                  class="text-blue-500 hover:text-blue-700"
+                  title="Baixar"
+                >
+                  📥
+                </a>
+                <form
+                  action="/web/files/delete"
+                  method="post"
+                  onsubmit="
+                    return confirm('Apagar este arquivo permanentemente?')
+                  "
+                >
+                  <input
+                    type="hidden"
+                    name="folder_id"
+                    value="{{ folder['id'] }}"
+                  />
+                  <input
+                    type="hidden"
+                    name="path"
+                    value="{{ file.rel_path }}"
+                  />
+                  <button type="submit" class="text-red-500 hover:text-red-700">
+                    🗑️
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="4" class="py-10 text-center text-gray-400 italic">
+                Pasta vazia ou sem arquivos síncronos.
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </body>
+</html>

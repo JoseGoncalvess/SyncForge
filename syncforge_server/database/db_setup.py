@@ -24,14 +24,15 @@ def init_db():
     cursor = conn.cursor()
 
     # 1. Tabela de Usuários (Mantida exatamente como a sua)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT NOT NULL,
-        device_token TEXT
-    )
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL, 
+            password_hash TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            role TEXT NOT NULL,
+            device_token TEXT
+        )
     ''')
 
     # 2. Tabela de Pastas (Folders) - Adicionada apenas a coluna server_path
